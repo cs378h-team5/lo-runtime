@@ -1,63 +1,130 @@
-//! String operations (`runtime-abi.md` §3.2). All **stubbed** — the team
-//! implements these in P3. Each carries the exact C-ABI signature so the
-//! skeleton links; calling one panics with a recognizable message.
-//!
-//! Implementation hints for the team live in the ABI: `lo_string_repeat` aborts
-//! on negative count (exit 120); `lo_string_compare` is lexicographic UTF-8 byte
-//! ordering; `lo_string_reverse` reverses codepoints, not bytes. The internal
-//! variable-size allocator to build results with is `alloc::bump_alloc_string`.
+//! String operations over inline UTF-8 storage (`runtime-abi.md` §3.2).
 
-use crate::object::Object;
+use crate::{
+    abort::runtime_abort,
+    alloc::bump_alloc_string,
+    object::{string_data_offset, Object, ShadowFrame, StringObject},
+    shadow_stack::{lo_pop_frame, lo_push_frame},
+};
+use core::{ptr, slice};
 
-/// Construct a string from `len` raw UTF-8 bytes (copied; caller owns the
-/// source).
+unsafe fn bytes<'a>(s: *mut Object) -> &'a [u8] {
+    slice::from_raw_parts(
+        s.cast::<u8>().add(string_data_offset()),
+        (*s.cast::<StringObject>()).length as usize,
+    )
+}
+
+unsafe fn allocate(len: u32, roots: [*mut Object; 2]) -> (*mut Object, [*mut Object; 2]) {
+    #[repr(C)]
+    struct Frame {
+        header: ShadowFrame,
+        roots: [*mut Object; 2],
+    }
+    let mut frame = Frame {
+        header: ShadowFrame {
+            parent: ptr::null_mut(),
+            num_roots: 2,
+            roots: [],
+        },
+        roots,
+    };
+    // Allocation may move either input; reload both from the registered frame.
+    lo_push_frame(ptr::addr_of_mut!(frame).cast());
+    let result = bump_alloc_string(len);
+    lo_pop_frame();
+    (result, frame.roots)
+}
+
+fn length(value: Option<u32>) -> u32 {
+    value.unwrap_or_else(|| runtime_abort("lo_alloc: out of memory", 137))
+}
+
+/// Copy raw UTF-8 bytes into a new string.
 ///
 /// # Safety
-/// `bytes` must point at `len` readable bytes.
+/// `source` must point to `len` readable bytes of valid UTF-8, or may be null for zero length.
 #[no_mangle]
-pub unsafe extern "C" fn lo_string_new(bytes: *const u8, len: u32) -> *mut Object {
-    let _ = (bytes, len);
-    unimplemented!("lo_string_new: team implements per P3");
+pub unsafe extern "C" fn lo_string_new(source: *const u8, len: u32) -> *mut Object {
+    // Snapshot before managed allocation in case the source points into a movable object.
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(len as usize)
+        .unwrap_or_else(|_| runtime_abort("lo_alloc: out of memory", 137));
+    if len != 0 {
+        copy.extend_from_slice(slice::from_raw_parts(source, len as usize));
+    }
+    let result = bump_alloc_string(len);
+    ptr::copy_nonoverlapping(
+        copy.as_ptr(),
+        result.cast::<u8>().add(string_data_offset()),
+        copy.len(),
+    );
+    result
 }
 
 /// Return a new string `a + b`.
 ///
 /// # Safety
-/// `a` and `b` must point at valid `StringObject`s.
+/// Both arguments must point to valid StringObjects.
 #[no_mangle]
 pub unsafe extern "C" fn lo_string_concat(a: *mut Object, b: *mut Object) -> *mut Object {
-    let _ = (a, b);
-    unimplemented!("lo_string_concat: team implements per P3");
+    let len = length(
+        (*a.cast::<StringObject>())
+            .length
+            .checked_add((*b.cast::<StringObject>()).length),
+    );
+    let (result, [a, b]) = allocate(len, [a, b]);
+    let dest = result.cast::<u8>().add(string_data_offset());
+    ptr::copy_nonoverlapping(bytes(a).as_ptr(), dest, bytes(a).len());
+    ptr::copy_nonoverlapping(bytes(b).as_ptr(), dest.add(bytes(a).len()), bytes(b).len());
+    result
 }
 
-/// Return a new string: `s` repeated `n` times. Aborts (exit 120) on negative
-/// `n`.
+/// Repeat a string, aborting with exit 120 for a negative count.
 ///
 /// # Safety
-/// `s` must point at a valid `StringObject`.
+/// `s` must point to a valid StringObject.
 #[no_mangle]
 pub unsafe extern "C" fn lo_string_repeat(s: *mut Object, n: i32) -> *mut Object {
-    let _ = (s, n);
-    unimplemented!("lo_string_repeat: team implements per P3");
+    if n < 0 {
+        runtime_abort(&format!("lo_string_repeat: negative count {n}"), 120);
+    }
+    let len = length((*s.cast::<StringObject>()).length.checked_mul(n as u32));
+    let (result, [s, _]) = allocate(len, [s, ptr::null_mut()]);
+    let source = bytes(s);
+    if !source.is_empty() {
+        let dest =
+            slice::from_raw_parts_mut(result.cast::<u8>().add(string_data_offset()), len as usize);
+        for chunk in dest.chunks_exact_mut(source.len()) {
+            chunk.copy_from_slice(source);
+        }
+    }
+    result
 }
 
-/// Compare two strings, returning negative / zero / positive by lexicographic
-/// UTF-8 byte ordering.
+/// Compare strings by lexicographic UTF-8 byte order.
 ///
 /// # Safety
-/// `a` and `b` must point at valid `StringObject`s.
+/// Both arguments must point to valid StringObjects.
 #[no_mangle]
 pub unsafe extern "C" fn lo_string_compare(a: *mut Object, b: *mut Object) -> i32 {
-    let _ = (a, b);
-    unimplemented!("lo_string_compare: team implements per P3");
+    bytes(a).cmp(bytes(b)) as i32
 }
 
-/// Return a new string with codepoints reversed.
+/// Reverse Unicode codepoints, preserving each codepoint's UTF-8 encoding.
 ///
 /// # Safety
-/// `s` must point at a valid `StringObject`.
+/// `s` must point to a valid StringObject containing valid UTF-8.
 #[no_mangle]
 pub unsafe extern "C" fn lo_string_reverse(s: *mut Object) -> *mut Object {
-    let _ = s;
-    unimplemented!("lo_string_reverse: team implements per P3");
+    let len = (*s.cast::<StringObject>()).length;
+    let (result, [s, _]) = allocate(len, [s, ptr::null_mut()]);
+    let source = core::str::from_utf8_unchecked(bytes(s));
+    let dest =
+        slice::from_raw_parts_mut(result.cast::<u8>().add(string_data_offset()), len as usize);
+    let mut offset = 0;
+    for ch in source.chars().rev() {
+        offset += ch.encode_utf8(&mut dest[offset..]).len();
+    }
+    result
 }

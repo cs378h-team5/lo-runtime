@@ -1,10 +1,8 @@
 //! LO runtime skeleton (Rust) — CS 378H Compilers, Fall 2026.
 //!
 //! This crate implements the shared LO runtime ABI (`runtime-abi.md`). The
-//! *provided* entry points (allocation, shadow stack, I/O, write barrier,
-//! lifecycle, descriptors) work out of the box; the *stubbed* ones (GC, string
-//! ops, casts) carry the correct C-ABI signature and panic with a recognizable
-//! message until a team implements them in P3.
+//! entry points include allocation, shadow stack, I/O, write barrier, lifecycle,
+//! descriptors, strings, and casts. The reference Cheney collector remains in place.
 //!
 //! Module layout mirrors the other two skeletons:
 //! - [`object`] — ABI-visible type definitions.
@@ -13,8 +11,8 @@
 //! - [`shadow_stack`] — root-tracking frame list.
 //! - [`init`] — runtime lifecycle.
 //! - [`io`] — print / read / EOF.
-//! - [`gc`] — write barrier (provided) + collect (stub).
-//! - [`string_ops`], [`cast`] — stubs.
+//! - [`gc`] — write barrier and reference Cheney collector.
+//! - [`string_ops`], [`cast`] — UTF-8 operations and ancestry checks.
 //! - [`abort`] — runtime abort paths + `lo_abort_null_receiver`.
 //!
 //! `unsafe` is contained to the FFI boundary and the allocator / shadow-stack

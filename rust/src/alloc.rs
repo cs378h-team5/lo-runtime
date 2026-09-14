@@ -150,7 +150,9 @@ unsafe fn bump_if_fits(size: usize) -> *mut u8 {
     let limit = FROM_LIMIT;
     // Address arithmetic for the bounds check avoids forming an out-of-bounds
     // pointer when the request would overflow the semispace.
-    let new_addr = (bump as usize).wrapping_add(size);
+    let Some(new_addr) = (bump as usize).checked_add(size) else {
+        return ptr::null_mut();
+    };
     if bump.is_null() || new_addr > limit as usize {
         return ptr::null_mut();
     }
@@ -187,7 +189,12 @@ pub unsafe extern "C" fn lo_alloc(class: *const ClassDescriptor) -> *mut Object 
 /// Must be called after `heap_init`. Returns a valid `*mut Object`/`*mut
 /// StringObject` or aborts on OOM.
 pub(crate) unsafe fn bump_alloc_string(len: u32) -> *mut Object {
-    let size = align_up(string_data_offset() + len as usize, 8);
+    let size = (len as usize)
+        .checked_add(string_data_offset())
+        .and_then(|size| size.checked_add(7))
+        .filter(|size| *size <= isize::MAX as usize)
+        .unwrap_or_else(|| crate::abort::runtime_abort("lo_alloc: out of memory", 137))
+        & !7;
     let obj = alloc_raw(size, &LO_STRING_CLASS);
     let so = obj as *mut StringObject;
     (*so).length = len;
