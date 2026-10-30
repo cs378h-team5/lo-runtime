@@ -2,7 +2,7 @@
 //!
 //! This crate implements the shared LO runtime ABI (`runtime-abi.md`). The
 //! entry points include allocation, shadow stack, I/O, write barrier, lifecycle,
-//! descriptors, strings, and casts. The reference Cheney collector remains in place.
+//! descriptors, strings, and casts. The sliding mark-compact collector uses exact shadow roots and descriptor pointer maps.
 //!
 //! Module layout mirrors the other two skeletons:
 //! - [`object`] — ABI-visible type definitions.
@@ -11,7 +11,7 @@
 //! - [`shadow_stack`] — root-tracking frame list.
 //! - [`init`] — runtime lifecycle.
 //! - [`io`] — print / read / EOF.
-//! - [`gc`] — write barrier and reference Cheney collector.
+//! - [`gc`] — write barrier and sliding mark-compact collection.
 //! - [`string_ops`], [`cast`] — UTF-8 operations and ancestry checks.
 //! - [`abort`] — runtime abort paths + `lo_abort_null_receiver`.
 //!
